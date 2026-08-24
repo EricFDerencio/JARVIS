@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>JARVIS</title>
+<style>
+  :root {
+    --cyan: #4ff2ff;
+    --cyan-dim: #1a6b73;
+    --bg: #01050a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    height: 100vh;
+    background: radial-gradient(circle at center, #04141a 0%, var(--bg) 70%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', Consolas, monospace;
+    color: var(--cyan);
+    overflow: hidden;
+  }
+  #ring-wrap {
+    position: relative;
+    width: 380px;
+    height: 380px;
+  }
+  svg { width: 100%; height: 100%; }
+  .ring {
+    fill: none;
+    stroke: var(--cyan-dim);
+    stroke-width: 2;
+  }
+  .ring-active {
+    fill: none;
+    stroke: var(--cyan);
+    stroke-width: 3;
+    filter: drop-shadow(0 0 8px var(--cyan));
+    transform-origin: center;
+    animation: spin 6s linear infinite;
+  }
+  .ring-active.fast { animation-duration: 1.2s; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #core {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 90px; height: 90px;
+    margin: -45px 0 0 -45px;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--cyan) 0%, transparent 70%);
+    opacity: 0.6;
+    transition: all 0.15s ease;
+  }
+  #core.listening { opacity: 1; box-shadow: 0 0 40px 10px var(--cyan); }
+  #core.thinking { animation: pulse 0.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.25); } }
+  #status {
+    margin-top: 30px;
+    letter-spacing: 4px;
+    font-size: 14px;
+    text-transform: uppercase;
+    opacity: 0.85;
+    min-height: 20px;
+  }
+  #transcript {
+    margin-top: 16px;
+    max-width: 640px;
+    text-align: center;
+    font-size: 18px;
+    min-height: 28px;
+    color: #eafcff;
+  }
+  #reply {
+    margin-top: 10px;
+    max-width: 640px;
+    text-align: center;
+    font-size: 15px;
+    color: var(--cyan);
+    opacity: 0.9;
+  }
+  #log {
+    position: absolute;
+    bottom: 16px; left: 16px;
+    font-size: 11px;
+    color: var(--cyan-dim);
+    max-width: 320px;
+    line-height: 1.5;
+  }
+  #tapHint {
+    position: absolute;
+    top: 16px; width: 100%;
+    text-align: center;
+    font-size: 12px;
+    letter-spacing: 2px;
+    opacity: 0.5;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <div id="tapHint">TOQUE PARA FALAR COM O JARVIS</div>
+
+  <div id="ring-wrap">
+    <svg viewBox="0 0 200 200">
+      <circle class="ring" cx="100" cy="100" r="90" />
+      <circle class="ring" cx="100" cy="100" r="70" />
+      <circle id="activeRing" class="ring-active" cx="100" cy="100" r="80"
+              stroke-dasharray="30 470" />
+    </svg>
+    <div id="core"></div>
+  </div>
+
+  <div id="status">Aguardando</div>
+  <div id="transcript"></div>
+  <div id="reply"></div>
+  <div id="log"></div>
+
+<script>
+const BACKEND_URL = "http://localhost:8000/command";
+
+const core = document.getElementById('core');
+const statusEl = document.getElementById('status');
+const transcriptEl = document.getElementById('transcript');
+const replyEl = document.getElementById('reply');
+const logEl = document.getElementById('log');
+const activeRing = document.getElementById('activeRing');
+const wrap = document.getElementById('ring-wrap');
+const tapHint = document.getElementById('tapHint');
+
+function setState(state) {
+  core.className = state; // '', 'listening', 'thinking'
+  activeRing.classList.toggle('fast', state === 'thinking');
+  statusEl.textContent = {
+    '': 'Aguardando',
+    'listening': 'Ouvindo...',
+    'thinking': 'Processando...',
+    'speaking': 'Respondendo...'
+  }[state] || state;
+}
+
+// --- Reconhecimento de voz ---
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+if (SpeechRecognition) {
+  recognition = new SpeechRecognition();
+  recognition.lang = 'pt-BR';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => setState('listening');
+  recognition.onresult = (event) => {
+    const text = event.results[0][0].transcript;
+    transcriptEl.textContent = `"${text}"`;
+    sendCommand(text);
+  };
+  recognition.onerror = (e) => {
+    setState('');
+    statusEl.textContent = 'Erro no microfone: ' + e.error;
+  };
+  recognition.onend = () => {
+    if (core.className === 'listening') setState('');
+  };
+} else {
+  statusEl.textContent = 'Reconhecimento de voz não suportado neste navegador (use Chrome)';
+}
+
+wrap.addEventListener('click', startListening);
+tapHint.addEventListener('click', startListening);
+
+function startListening() {
+  if (!recognition) return;
+  replyEl.textContent = '';
+  transcriptEl.textContent = '';
+  recognition.start();
+}
+
+async function sendCommand(text) {
+  setState('thinking');
+  try {
+    const res = await fetch(BACKEND_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    const data = await res.json();
+    replyEl.textContent = data.reply;
+    if (data.tool_calls && data.tool_calls.length) {
+      logEl.textContent = 'Ferramentas usadas: ' + data.tool_calls.join(' | ');
+    } else {
+      logEl.textContent = '';
+    }
+    speak(data.reply);
+  } catch (err) {
+    setState('');
+    replyEl.textContent = 'Erro ao conectar no backend: ' + err.message;
+  }
+}
+
+function speak(text) {
+  setState('speaking');
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'pt-BR';
+  utter.onend = () => setState('');
+  speechSynthesis.speak(utter);
+}
+</script>
+</body>
+</html>
